@@ -1,7 +1,52 @@
+import json
+import os
+from pathlib import Path
+from typing import cast
+
+from dotenv import load_dotenv
 from flask import Blueprint, jsonify, request
+from openai import APIError, OpenAI
 from src.models.note import Note, db
 
 note_bp = Blueprint('note', __name__)
+load_dotenv()
+
+TRANSLATE_PROMPT = Path(__file__).resolve().parents[2] / 'prompts' / 'translate_prompt.md'
+
+@note_bp.route('/notes/translate', methods=['POST'])
+def translate_note():
+    data = request.get_json(silent=True)
+    content = cast(dict[str, object], data).get('content') if isinstance(data, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        return jsonify({'error': 'Note content is required'}), 400
+
+    api_key = os.getenv('OPEN_ROUTER_KEY')
+    if not api_key:
+        return jsonify({'error': 'Translation is not configured'}), 503
+
+    try:
+        prompt = TRANSLATE_PROMPT.read_text(encoding='utf-8')
+    except OSError:
+        return jsonify({'error': 'Translation prompt is unavailable'}), 500
+
+    try:
+        response = OpenAI(base_url='https://openrouter.ai/api/v1', api_key=api_key).chat.completions.create(
+            model='qwen/qwen3.8-27b:free',
+            messages=[
+                {'role': 'system', 'content': prompt},
+                {'role': 'user', 'content': content},
+            ],
+            timeout=30,
+        )
+        result: object = json.loads(response.choices[0].message.content or '')
+    except (APIError, ValueError, IndexError, AttributeError, TypeError):
+        return jsonify({'error': 'Translation failed. Please try again.'}), 502
+
+    translation = cast(dict[str, object], result).get('translation') if isinstance(result, dict) else None
+    if not isinstance(translation, str) or not translation.strip():
+        return jsonify({'error': 'Translation failed. Please try again.'}), 502
+
+    return jsonify({'translation': translation})
 
 @note_bp.route('/notes', methods=['GET'])
 def get_notes():
